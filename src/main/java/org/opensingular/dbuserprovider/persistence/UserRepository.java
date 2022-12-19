@@ -13,6 +13,9 @@ import org.opensingular.dbuserprovider.util.PagingUtil;
 import org.opensingular.dbuserprovider.util.PagingUtil.Pageable;
 
 import javax.sql.DataSource;
+import java.io.ByteArrayOutputStream;
+import java.io.Console;
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -143,18 +146,73 @@ public class UserRepository {
     
     public boolean validateCredentials(String username, String password) {
         String hash = Optional.ofNullable(doQuery(queryConfigurations.getFindPasswordHash(), null, this::readString, username)).orElse("");
+
+        // Decode the password hash from Base64, if needed
+        if (queryConfigurations.isHashBase64().equals("true")) {
+            hash = Hex.encodeHexString(Base64.getDecoder().decode(hash));
+        }
+
+        // Convert the string to bytes, confidering the unicode encoding of the password string
+        byte[] pwdBytes;
+        switch (queryConfigurations.getPasswordEncoding()) {
+            case "UTF-8":
+                pwdBytes = StringUtils.getBytesUtf8(password);
+                break;
+            case "UTF-16":
+                pwdBytes = StringUtils.getBytesUtf16(password);
+                break;
+            case "UTF-16BE":
+                pwdBytes = StringUtils.getBytesUtf16Be(password);
+                break;
+            case "UTF-16LE":
+                pwdBytes = StringUtils.getBytesUtf16Le(password);
+                break;
+            default:
+                pwdBytes = StringUtils.getBytesUtf8(password);
+        }
+
+        // Look to see if the password should be salted
+        String saltLocation = queryConfigurations.getSaltLocation();
+        if (!saltLocation.equals("None")) {
+            String salt = doQuery(queryConfigurations.getFindPasswordSalt(), null, this::readString, username);
+            log.infov("Decoding salt from: {0}", salt);
+            byte[] decodedSalt = Base64.getDecoder().decode(salt);
+            log.infov("Decoded salt to: {0}", Hex.encodeHexString(decodedSalt));
+
+            // Add the salt
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream( );
+            try {
+                if (saltLocation.equals("Prepend")) {
+                    log.infov("Prepending salt: {0}", Hex.encodeHexString(decodedSalt));
+                    outputStream.write(decodedSalt);
+                    outputStream.write(pwdBytes);
+                } else {
+                    log.infov("Appending salt {0}", Hex.encodeHexString(decodedSalt));
+                    outputStream.write(pwdBytes);
+                    outputStream.write(decodedSalt);
+                }
+                pwdBytes = outputStream.toByteArray( );
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
         if (queryConfigurations.isBlowfish()) {
-            return !hash.isEmpty() && BCrypt.checkpw(password, hash);
+            return !hash.isEmpty() && BCrypt.checkpw(new String(pwdBytes), hash);
         } else {
             String hashFunction = queryConfigurations.getHashFunction();
 
             if(hashFunction.equals("PBKDF2-SHA256")){
                 String[] components = hash.split("\\$");
-                return new PBKDF2SHA256HashingUtil(password, components[2], Integer.valueOf(components[1])).validatePassword(components[3]);
+                return new PBKDF2SHA256HashingUtil(new String((pwdBytes)), components[2], Integer.valueOf(components[1])).validatePassword(components[3]);
             }
 
+            log.infov("Generating hash using {0} of {1}", hashFunction, Hex.encodeHexString(pwdBytes));
+
             MessageDigest digest   = DigestUtils.getDigest(hashFunction);
-            byte[]        pwdBytes = StringUtils.getBytesUtf8(password);
+
+            log.infov("Comparing {0} to expected {1}", Hex.encodeHexString(digest.digest(pwdBytes)), hash);
+
             return Objects.equals(Hex.encodeHexString(digest.digest(pwdBytes)), hash);
         }
     }

@@ -21,7 +21,7 @@ import java.util.Map;
 @JBossLog
 @AutoService(UserStorageProviderFactory.class)
 public class DBUserStorageProviderFactory implements UserStorageProviderFactory<DBUserStorageProvider> {
-    
+
     private static final String PARAMETER_PLACEHOLDER_HELP = "Use '?' as parameter placeholder character (replaced only once). ";
     private static final String DEFAULT_HELP_TEXT          = "Select to query all users you must return at least: \"id\". " +
                                                              "            \"username\"," +
@@ -29,27 +29,27 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                                              "            \"firstName\" (optional)," +
                                                              "            \"lastName\" (optional). Any other parameter can be mapped by aliases to a realm scope";
     private static final String PARAMETER_HELP             = " The %s is passed as query parameter.";
-    
-    
+
+
     private Map<String, ProviderConfig> providerConfigPerInstance = new HashMap<>();
-    
+
     @Override
     public void init(Config.Scope config) {
     }
-    
+
     @Override
     public void close() {
         for (Map.Entry<String, ProviderConfig> pc : providerConfigPerInstance.entrySet()) {
             pc.getValue().dataSourceProvider.close();
         }
     }
-    
+
     @Override
     public DBUserStorageProvider create(KeycloakSession session, ComponentModel model) {
         ProviderConfig providerConfig = providerConfigPerInstance.computeIfAbsent(model.getId(), s -> configure(model));
         return new DBUserStorageProvider(session, model, providerConfig.dataSourceProvider, providerConfig.queryConfigurations);
     }
-    
+
     private synchronized ProviderConfig configure(ComponentModel model) {
         log.infov("Creating configuration for model: id={0} name={1}", model.getId(), model.getName());
         ProviderConfig providerConfig = new ProviderConfig();
@@ -65,6 +65,10 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                 model.get("findByUsername"),
                 model.get("findBySearchTerm"),
                 model.get("findPasswordHash"),
+                model.get("passwordEncoding"),
+                model.get("hashIsBase64"),
+                model.get("findPasswordSalt"),
+                model.get("saltLocation"),
                 model.get("hashFunction"),
                 rdbms,
                 model.get("allowKeycloakDelete", false),
@@ -72,7 +76,7 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
         );
         return providerConfig;
     }
-    
+
     @Override
     public void validateConfiguration(KeycloakSession session, RealmModel realm, ComponentModel model) throws ComponentValidationException {
         try {
@@ -84,12 +88,12 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
             throw new ComponentValidationException(e.getMessage(), e);
         }
     }
-    
+
     @Override
     public String getId() {
         return "singular-db-user-provider";
     }
-    
+
     @Override
     public List<ProviderConfigProperty> getConfigProperties() {
         return ProviderConfigurationBuilder.create()
@@ -162,7 +166,7 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                                          "            \"cpf\"," +
                                                          "            \"fullName\" from users ")
                                            .add()
-        
+
                                            .property()
                                            .name("findById")
                                            .label("Find user by id SQL query")
@@ -204,13 +208,50 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                                          "            \"cpf\"," +
                                                          "            \"fullName\" from users where upper(\"username\") like (?)  or upper(\"email\") like (?) or upper(\"fullName\") like (?)")
                                            .add()
-        
                                            .property()
                                            .name("findPasswordHash")
                                            .label("Find password hash (blowfish or hash digest hex) SQL query")
                                            .helpText(DEFAULT_HELP_TEXT + String.format(PARAMETER_HELP, "user username") + PARAMETER_PLACEHOLDER_HELP)
                                            .type(ProviderConfigProperty.STRING_TYPE)
                                            .defaultValue("select hash_pwd from users where \"username\" = ? ")
+                                           .add()
+
+                                           // Species360 custom property added
+                                           .property()
+                                           .name("passwordEncoding")
+                                           .label("Password unicode format")
+                                           .helpText("Set the unicode encoding of the password")
+                                           .type(ProviderConfigProperty.LIST_TYPE)
+                                           .options("UTF-8", "UTF-16", "UTF-16LE", "UTF-16BE")
+                                           .defaultValue("UTF-8")
+                                           .add()
+
+                                            // Species360 custom property added
+                                           .property()
+                                           .name("hashIsBase64")
+                                           .label("Password hash is base64 encoded")
+                                           .helpText("Click if the stored password hash is base64 encoded")
+                                           .type(ProviderConfigProperty.BOOLEAN_TYPE)
+                                           .defaultValue("false")
+                                           .add()
+
+                                            // Species360 custom property added
+                                           .property()
+                                           .name("findPasswordSalt")
+                                           .label("Find password salt SQL query")
+                                           .helpText(DEFAULT_HELP_TEXT + String.format(PARAMETER_HELP, "user username") + PARAMETER_PLACEHOLDER_HELP)
+                                           .type(ProviderConfigProperty.STRING_TYPE)
+                                           .defaultValue("select hash_salt from users where \"username\" = ? ")
+                                           .add()
+
+                                            // Species360 custom property added
+                                           .property()
+                                           .name("saltLocation")
+                                           .label("Salt location on the password")
+                                           .helpText("Where in the password the salt resides")
+                                           .type(ProviderConfigProperty.LIST_TYPE)
+                                           .options("None", "Prepend", "Append")
+                                           .defaultValue("None")
                                            .add()
                                            .property()
                                            .name("hashFunction")
@@ -222,11 +263,11 @@ public class DBUserStorageProviderFactory implements UserStorageProviderFactory<
                                            .add()
                                            .build();
     }
-    
+
     private static class ProviderConfig {
         private DataSourceProvider  dataSourceProvider = new DataSourceProvider();
         private QueryConfigurations queryConfigurations;
     }
-    
-    
+
+
 }
